@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>동작 인식 벌레 잡기 게임</title>
+    <!-- TensorFlow.js 및 Teachable Machine Pose 라이브러리 -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.7.4/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/pose@0.8.6/dist/teachablemachine-pose.min.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: 'Pretendard', sans-serif;
+            background-color: #121212;
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+        h1 {
+            margin-bottom: 12px;
+            font-size: 26px;
+            color: #f1c40f;
+        }
+        #game-container {
+            position: relative;
+            width: 640px;
+            height: 480px;
+            border: 4px solid #333;
+            border-radius: 16px;
+            overflow: hidden;
+            background-color: #000;
+            box-shadow: 0 12px 40px rgba(0,0,0,0.8);
+        }
+        /* 웹캠 및 게임 레이어 캔버스 */
+        #webcam-canvas, #game-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 640px;
+            height: 480px;
+        }
+        #webcam-canvas {
+            transform: scaleX(-1); /* 거울 모드 */
+            opacity: 0.6; /* 웹캠 배경 투명도 조정 */
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 16px;
+            z-index: 5;
+        }
+        .hud {
+            display: flex;
+            justify-content: space-between;
+            font-size: 22px;
+            font-weight: bold;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px 20px;
+            border-radius: 10px;
+            border: 1px solid #444;
+        }
+        #target-zone {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 110px;
+            height: 110px;
+            transform: translate(-50%, -50%);
+            border: 4px dashed #f39c12;
+            border-radius: 50%;
+            pointer-events: none;
+            box-shadow: 0 0 15px rgba(243, 156, 18, 0.5);
+            animation: pulse 1.2s infinite ease-in-out;
+        }
+        @keyframes pulse {
+            0% { transform: translate(-50%, -50%) scale(0.95); opacity: 0.8; }
+            50% { transform: translate(-50%, -50%) scale(1.1); opacity: 1; }
+            100% { transform: translate(-50%, -50%) scale(0.95); opacity: 0.8; }
+        }
+        #pose-status {
+            text-align: center;
+            font-size: 20px;
+            font-weight: bold;
+            background: rgba(0, 0, 0, 0.75);
+            padding: 8px 16px;
+            border-radius: 25px;
+            align-self: center;
+            color: #2ecc71;
+            border: 1px solid #2ecc71;
+        }
+        .overlay-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.88);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+        }
+        button {
+            margin-top: 20px;
+            padding: 14px 36px;
+            font-size: 20px;
+            font-weight: bold;
+            color: #fff;
+            background: linear-gradient(135deg, #e74c3c, #c0392b);
+            border: none;
+            border-radius: 30px;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(231, 76, 60, 0.4);
+            transition: 0.2s transform;
+        }
+        button:hover {
+            transform: scale(1.05);
+        }
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+        .guide-box {
+            background: rgba(255, 255, 255, 0.08);
+            padding: 15px 25px;
+            border-radius: 10px;
+            margin-top: 15px;
+            text-align: center;
+            line-height: 1.6;
+            font-size: 15px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>🪰 동작 인식 벌레 잡기 게임 🪳</h1>
+
+    <div id="game-container">
+        <!-- 웹캠 표시용 Canvas -->
+        <canvas id="webcam-canvas" width="640" height="480"></canvas>
+        <!-- 게임 요소(벌레, 이펙트 등) 표시용 Canvas -->
+        <canvas id="game-canvas" width="640" height="480"></canvas>
+
+        <!-- UI 레이어 -->
+        <div id="ui-layer">
+            <div class="hud">
+                <div>점수: <span id="score-val">0</span></div>
+                <div>레벨: <span id="level-val">1</span></div>
+                <div>목숨: <span id="life-val">❤️❤️❤️</span></div>
+            </div>
+            <div id="target-zone"></div>
+            <div id="pose-status">카메라 준비 중...</div>
+        </div>
+
+        <!-- 시작 화면 -->
+        <div id="start-screen" class="overlay-screen">
+            <h2>게임 조작 가이드</h2>
+            <div class="guide-box">
+                <p>🪳 <strong>바퀴벌레</strong>가 중앙에 올 때 👉 <strong>[주먹]</strong> 포즈!</p>
+                <p>🪰 <strong>파리</strong>가 중앙에 올 때 👉 <strong>[박수]</strong> 포즈!</p>
+            </div>
+            <button id="start-btn" onclick="startGame()" disabled>카메라 로딩 중...</button>
+        </div>
+
+        <!-- 게임 오버 화면 -->
+        <div id="game-over-screen" class="overlay-screen" style="display: none;">
+            <h2 style="color: #e74c3c; font-size: 36px;">GAME OVER</h2>
+            <p style="font-size: 24px; margin-top: 15px;">최종 점수: <span id="final-score">0</span></p>
+            <button onclick="startGame()">다시 시작</button>
+        </div>
+    </div>
+
+    <script>
+        // 모델 경로 설정 (로컬 파일 사용 시 ./model.json 사용)
+        const MODEL_URL = "./model.json";
+        const METADATA_URL = "./metadata.json";
+
+        let model, webcam, maxPredictions;
+        let isGameRunning = false;
+
+        // 게임 상태 변수
+        let score = 0;
+        let level = 1;
+        let lives = 3;
+        let currentPose = "None";
+
+        // 벌레 데이터 관리
+        let bugs = [];
+        let lastSpawnTime = 0;
+        let spawnInterval = 1800; // 벌레 생성 간격 (ms)
+        let bugSpeed = 2.5;
+
+        const gameCanvas = document.getElementById("game-canvas");
+        const gCtx = gameCanvas.getContext("2d");
+
+        // 1. 모델 및 웹캠 안전 로딩
+        async function initEngine() {
+            const statusEl = document.getElementById("pose-status");
+            const startBtn = document.getElementById("start-btn");
+
+            try {
+                statusEl.innerText = "모델 불러오는 중...";
+                model = await tmPose.load(MODEL_URL, METADATA_URL);
+                maxPredictions = model.getTotalClasses();
+
+                statusEl.innerText = "웹캠 연결 중...";
+                webcam = new tmPose.Webcam(640, 480, true); // 640x480, 거울모드
+                await webcam.setup();
+                await webcam.play();
+
+                statusEl.innerText = "준비 완료!";
+                startBtn.disabled = false;
+                startBtn.innerText = "게임 시작";
+
+                // 메인 루프 시작
+                requestAnimationFrame(mainLoop);
+            } catch (err) {
+                console.error(err);
+                statusEl.innerText = "로딩 실패 (파일/권한 확인)";
+                alert("모델 파일(model.json)을 읽지 못했거나 웹캠 권한이 거부되었습니다.\n\n※ 로컬 파일 직접 실행 시 웹 브라우저 보안(CORS)으로 블락될 수 있으니 VS Code Live Server나 Web Server 환경에서 열어주세요.");
+            }
+        }
+
+        // 2. 통합 메인 렌더링/업데이트 루프
+        async function mainLoop(timestamp) {
+            // A. 웹캠 프레임 갱신 및 캔버스 출력
+            webcam.update();
+            drawWebcamCanvas();
+
+            // B. 포즈 추론
+            await predictPose();
+
+            // C. 게임 로직 업데이트 및 벌레 렌더링
+            if (isGameRunning) {
+                updateGameLogic(timestamp);
+                renderGameElements();
+            }
+
+            requestAnimationFrame(mainLoop);
+        }
+
+        // 웹캠 프레임을 전용 Canvas에 출력
+        function drawWebcamCanvas() {
+            const webcamCanvas = document.getElementById("webcam-canvas");
+            const wCtx = webcamCanvas.getContext("2d");
+            wCtx.drawImage(webcam.canvas, 0, 0, 640, 480);
+        }
+
+        // 동작 추론 실행
+        async function predictPose() {
+            if (!model || !webcam) return;
+            const { pose, posenetOutput } = await model.estimatePose(webcam.canvas);
+            const prediction = await model.predict(posenetOutput);
+
+            let maxProb = 0;
+            let detected = "None";
+
+            for (let i = 0; i < maxPredictions; i++) {
+                if (prediction[i].probability > maxProb) {
+                    maxProb = prediction[i].probability;
+                    detected = prediction[i].className;
+                }
+            }
+
+            // 정확도 70% 이상일 때 동작으로 인정
+            if (maxProb > 0.70) {
+                currentPose = detected;
+                document.getElementById("pose-status").innerText = `인식: ${currentPose} (${Math.round(maxProb * 100)}%)`;
+            } else {
+                currentPose = "None";
+                document.getElementById("pose-status").innerText = "동작 감지 중...";
+            }
+        }
+
+        // 3. 게임 시작 처리
+        function startGame() {
+            score = 0;
+            level = 1;
+            lives = 3;
+            bugs = [];
+            spawnInterval = 1800;
+            bugSpeed = 2.5;
+
+            updateHUD();
+            document.getElementById("start-screen").style.display = "none";
+            document.getElementById("game-over-screen").style.display = "none";
+            
+            isGameRunning = true;
+            lastSpawnTime = performance.now();
+        }
+
+        // 4. 벌레 무작위 스폰 생성
+        function spawnBug() {
+            const types = ['roach', 'fly'];
+            const selectedType = types[Math.floor(Math.random() * types.length)];
+            
+            const targetX = 320;
+            const targetY = 240;
+            let startX, startY;
+
+            // 화면 4개 가장자리 외곽 무작위 지점
+            const dir = Math.floor(Math.random() * 4);
+            if (dir === 0) { startX = Math.random() * 640; startY = -40; }       // 상
+            else if (dir === 1) { startX = 680; startY = Math.random() * 480; }  // 우
+            else if (dir === 2) { startX = Math.random() * 640; startY = 520; }  // 하
+            else { startX = -40; startY = Math.random() * 480; }                 // 좌
+
+            const angle = Math.atan2(targetY - startY, targetX - startX);
+
+            bugs.push({
+                x: startX,
+                y: startY,
+                type: selectedType,
+                vx: Math.cos(angle) * bugSpeed,
+                vy: Math.sin(angle) * bugSpeed
+            });
+        }
+
+        // 5. 게임 상태 계산 및 판정
+        function updateGameLogic(timestamp) {
+            // 점수에 따른 난이도 상승
+            const calcLevel = Math.floor(score / 40) + 1;
+            if (calcLevel !== level) {
+                level = calcLevel;
+                bugSpeed = 2.5 + (level * 0.4);
+                spawnInterval = Math.max(600, 1800 - (level * 150));
+                updateHUD();
+            }
+
+            // 벌레 일정 주기마다 생성
+            if (timestamp - lastSpawnTime > spawnInterval) {
+                spawnBug();
+                lastSpawnTime = timestamp;
+            }
+
+            // 벌레 위치 이동 및 충돌/동작 판정
+            for (let i = bugs.length - 1; i >= 0; i--) {
+                let b = bugs[i];
+                b.x += b.vx;
+                b.y += b.vy;
+
+                // 화면 중앙(320, 240)과의 거리 측정
+                const dist = Math.hypot(b.x - 320, b.y - 240);
+
+                // 판정 구역(반지름 55px 이내) 진입 시 포즈 검사
+                if (dist < 55) {
+                    let catched = false;
+                    if (b.type === 'roach' && currentPose === '주먹') {
+                        catched = true;
+                    } else if (b.type === 'fly' && currentPose === '박수') {
+                        catched = true;
+                    }
+
+                    if (catched) {
+                        score += 10;
+                        updateHUD();
+                        bugs.splice(i, 1);
+                        continue;
+                    }
+                }
+
+                // 중앙 도착 시 놓침 처리
+                if (dist < 8) {
+                    lives--;
+                    updateHUD();
+                    bugs.splice(i, 1);
+
+                    if (lives <= 0) {
+                        isGameRunning = false;
+                        document.getElementById("final-score").innerText = score;
+                        document.getElementById("game-over-screen").style.display = "flex";
+                    }
+                }
+            }
+        }
+
+        // 6. 벌레 요소 그리기는 전용 게임 캔버스에 수행
+        function renderGameElements() {
+            gCtx.clearRect(0, 0, 640, 480);
+
+            bugs.forEach(b => {
+                gCtx.save();
+                gCtx.font = "42px sans-serif";
+                gCtx.textAlign = "center";
+                gCtx.textBaseline = "middle";
+                
+                const emoji = (b.type === 'roach') ? "🪳" : "🪰";
+                gCtx.fillText(emoji, b.x, b.y);
+                gCtx.restore();
+            });
+        }
+
+        function updateHUD() {
+            document.getElementById("score-val").innerText = score;
+            document.getElementById("level-val").innerText = level;
+            document.getElementById("life-val").innerText = "❤️".repeat(Math.max(0, lives));
+        }
+
+        // 실행
+        window.onload = initEngine;
+    </script>
+</body>
+</html>
